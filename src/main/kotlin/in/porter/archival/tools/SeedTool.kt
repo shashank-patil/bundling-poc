@@ -39,8 +39,13 @@ class SeedTool(
             c.prepareStatement(
                 "INSERT INTO oms_orders (order_id, invoice_pdf_uri, created_at) VALUES (?, ?, ?)"
             ).use { st ->
+                // The CRN has to be unique across cohorts, not just within one:
+                // seeding a second day must not regenerate the first day's
+                // objects, because createOnly is ifGenerationMatch=0 and will
+                // rightly refuse to overwrite them.
+                val dayOffset = spec.cohortDate.toEpochDay() * 1_000_000L
                 repeat(spec.orders) { i ->
-                    val crn = "CRN%010d".format(7_000_000_000L + i)
+                    val crn = "CRN%013d".format(dayOffset + i)
                     // Deterministic render id, so re-seeding produces the same layout.
                     val renderId = UUID.nameUUIDFromBytes(crn.toByteArray()).toString()
                     val pdfPath = "$prefix$renderId/invoice_$crn.pdf"

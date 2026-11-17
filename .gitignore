@@ -3,12 +3,16 @@ build/
 .gradle/
 *.class
 
-# PoC data - never in git history
+# PoC data lives in var/ inside this repo, and never in git history:
+#   var/sources   the generated invoices (stands in for the source bucket)
+#   var/archive   the tar bundles      (stands in for the archive bucket)
 /var/
-/data/
-/bundles/
-/sources/
+
+# Belt and braces - no document or bundle anywhere in the tree
 *.tar
+*.pdf
+*.html.meta
+*.pdf.meta
 
 # Local env
 .env

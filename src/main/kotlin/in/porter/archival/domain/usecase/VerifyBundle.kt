@@ -91,7 +91,7 @@ class VerifyBundle(
             val bad = sample.filterNot { member -> crcMatches(bundle, member.offsetBytes, member.lengthBytes, member.crc32c) }
             CheckResult("6 every byte", bad.isEmpty(), "${sample.size} sampled, ${bad.size} mismatched")
         } else {
-            CheckResult("6 every byte", true, "parked for initial rollout (verify.full.byte.scan=false)")
+            CheckResult("6 every byte", true, "parked for the initial rollout (verifySampleRatio=0)")
         }
 
         val report = Report(bundleId, checks)
