@@ -6,14 +6,9 @@ plugins {
 repositories { mavenCentral() }
 
 val ktorVersion = "2.3.12"
-val exposedVersion = "0.50.1"
 
 dependencies {
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
-
-  implementation("org.jetbrains.exposed:exposed-core:$exposedVersion")
-  implementation("org.jetbrains.exposed:exposed-jdbc:$exposedVersion")
-  implementation("org.jetbrains.exposed:exposed-java-time:$exposedVersion")
 
   implementation("org.postgresql:postgresql:42.7.3")
   implementation("com.zaxxer:HikariCP:5.1.0")
