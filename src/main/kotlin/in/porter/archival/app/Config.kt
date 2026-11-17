@@ -7,13 +7,15 @@ import java.util.Properties
 /**
  * Three sources, kept apart on purpose.
  *
- *   archival.properties  design decisions from the LLD - changing one changes
- *                        what the archive contains, or when
+ *   archival.properties  the `archive:` block from LLD 4.1 - design decisions.
+ *                        Changing one changes what the archive contains, or when
  *   engine.properties    tuning only - how hard the job pushes
  *   environment          where this particular process happens to run
  *
- * Any key can still be overridden by an environment variable, which is how the
- * kind manifests point the same image at a different database or folder.
+ * Key names match the LLD so the two documents can be read side by side. Any
+ * key can still be overridden by an environment variable - CUTOFF_DAYS,
+ * TARGET_BUNDLE_BYTES, FETCH_CONCURRENCY - which is how the kind manifests
+ * point one image at a different database or a smaller bundle.
  */
 data class Config(
     val archival: ArchivalConfig,
@@ -36,58 +38,85 @@ data class Config(
     }
 }
 
-/** Design configuration. Each field maps to a decision in the LLD. */
+/** Design configuration. Each field maps to a line in the LLD's archive: block. */
 data class ArchivalConfig(
     val sourceBucket: String,
     val sourcePrefix: String,
     val archiveBucket: String,
     val cutoffDays: Int,
-    val bundleTargetBytes: Long,
-    val bundleMaxMembers: Int,
-    val membersRetentionMonths: Int,
+    val targetBundleBytes: Long,
+    val maxBundleMembers: Int,
     val tarLayoutVersion: Int,
+    val partitionKey: String,
+    val partitionInterval: String,
+    val livePartitions: Int,
+    val partitionPremake: Int,
+    val dropPolicy: String,
     val docKinds: List<String>,
     val docFormats: List<String>,
+    /** Prefixes that are not tax documents and must never be archived. */
+    val excludedPrefixes: List<String>,
 ) {
     companion object {
         fun from(p: Properties) = ArchivalConfig(
-            sourceBucket = p.required("source.bucket"),
-            sourcePrefix = p.required("source.prefix"),
-            archiveBucket = p.required("archive.bucket"),
-            cutoffDays = p.required("cutoff.days").toInt(),
-            bundleTargetBytes = p.required("bundle.target.bytes").toLong(),
-            bundleMaxMembers = p.required("bundle.max.members").toInt(),
-            membersRetentionMonths = p.required("members.retention.months").toInt(),
-            tarLayoutVersion = p.required("tar.layout.version").toInt(),
-            docKinds = p.required("doc.kinds").split(',').map { it.trim() },
-            docFormats = p.required("doc.formats").split(',').map { it.trim() },
+            sourceBucket = p.required("sourceBucket"),
+            sourcePrefix = p.required("sourcePrefix"),
+            archiveBucket = p.required("archiveBucket"),
+            cutoffDays = p.required("cutoffDays").toInt(),
+            targetBundleBytes = p.required("targetBundleBytes").toLong(),
+            maxBundleMembers = p.required("maxBundleMembers").toInt(),
+            tarLayoutVersion = p.required("tarLayoutVersion").toInt(),
+            partitionKey = p.required("partitioning.key"),
+            partitionInterval = p.required("partitioning.interval"),
+            livePartitions = p.required("partitioning.livePartitions").toInt(),
+            partitionPremake = p.required("partitioning.premake").toInt(),
+            dropPolicy = p.required("partitioning.dropPolicy"),
+            docKinds = p.required("docKinds").splitList(),
+            docFormats = p.required("docFormats").splitList(),
+            excludedPrefixes = p.required("excludedPrefixes").splitList(),
         )
     }
 }
 
 /** Engineering configuration. Tuning only; none of it changes the archive. */
 data class EngineConfig(
+    val fetchConcurrency: Int,
+    val queueBytes: Long,
+    val uploadChunkBytes: Int,
+    val runBudgetMinutes: Int,
+    val leaseMinutes: Int,
+    val maxAttempts: Int,
+    val verifySampleRatio: Double,
     val dbPoolSize: Int,
     val dbStatementTimeout: String,
     val listerPageSize: Int,
-    val bundlerReaders: Int,
-    val bundlerQueueBytes: Long,
-    val bundlerChunkBytes: Int,
-    val bundlerLeaseMinutes: Int,
-    val verifyFullByteScan: Boolean,
-    val verifySampleSize: Int,
 ) {
+    init {
+        // Firm, and an API constraint rather than a preference: GCS resumable
+        // upload rejects a chunk that is not a multiple of 256 KiB.
+        require(uploadChunkBytes % (256 * 1024) == 0) {
+            "uploadChunkBytes must be a multiple of 256 KiB, got $uploadChunkBytes"
+        }
+        require(verifySampleRatio in 0.0..1.0) {
+            "verifySampleRatio must be between 0 and 1, got $verifySampleRatio"
+        }
+        require(queueBytes >= uploadChunkBytes) {
+            "queueBytes ($queueBytes) must not be smaller than uploadChunkBytes ($uploadChunkBytes)"
+        }
+    }
+
     companion object {
         fun from(p: Properties) = EngineConfig(
-            dbPoolSize = p.required("db.pool.size").toInt(),
-            dbStatementTimeout = p.required("db.statement.timeout"),
-            listerPageSize = p.required("lister.page.size").toInt(),
-            bundlerReaders = p.required("bundler.readers").toInt(),
-            bundlerQueueBytes = p.required("bundler.queue.bytes").toLong(),
-            bundlerChunkBytes = p.required("bundler.chunk.bytes").toInt(),
-            bundlerLeaseMinutes = p.required("bundler.lease.minutes").toInt(),
-            verifyFullByteScan = p.required("verify.full.byte.scan").toBoolean(),
-            verifySampleSize = p.required("verify.sample.size").toInt(),
+            fetchConcurrency = p.required("fetchConcurrency").toInt(),
+            queueBytes = p.required("queueBytes").toLong(),
+            uploadChunkBytes = p.required("uploadChunkBytes").toInt(),
+            runBudgetMinutes = p.required("runBudgetMinutes").toInt(),
+            leaseMinutes = p.required("leaseMinutes").toInt(),
+            maxAttempts = p.required("maxAttempts").toInt(),
+            verifySampleRatio = p.required("verifySampleRatio").toDouble(),
+            dbPoolSize = p.required("db.poolSize").toInt(),
+            dbStatementTimeout = p.required("db.statementTimeout"),
+            listerPageSize = p.required("listerPageSize").toInt(),
         )
     }
 }
@@ -115,16 +144,18 @@ data class RuntimeConfig(
     }
 }
 
-/**
- * Properties file first, environment second: SOURCE_BUCKET overrides
- * source.bucket, BUNDLE_TARGET_BYTES overrides bundle.target.bytes, and so on.
- */
+/** Properties file first, environment second: FETCH_CONCURRENCY beats fetchConcurrency. */
 private fun Properties.required(key: String): String {
-    val fromEnv = System.getenv(key.uppercase().replace('.', '_'))
-    if (!fromEnv.isNullOrBlank()) return fromEnv
+    val envKey = key.replace(".", "_")
+        .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
+        .uppercase()
+    System.getenv(envKey)?.takeIf { it.isNotBlank() }?.let { return it }
     return getProperty(key)?.takeIf { it.isNotBlank() }
         ?: error("missing configuration key: $key")
 }
+
+private fun String.splitList(): List<String> =
+    split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
 private fun env(key: String, default: String): String =
     System.getenv(key)?.takeIf { it.isNotBlank() } ?: default

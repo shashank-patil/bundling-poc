@@ -10,14 +10,16 @@ import `in`.porter.archival.domain.port.ObjectUnreadable
 import `in`.porter.archival.domain.port.StoredMember
 import `in`.porter.archival.domain.tar.UstarFramer
 import org.slf4j.LoggerFactory
+import java.io.BufferedOutputStream
 import java.io.OutputStream
 
 /**
  * Cron 2 - the Bundler, write half.
  *
- * Streams every member into one tar in the order the Lister already decided.
- * Nothing is buffered whole: the only thing held in memory is a copy buffer and
- * the manifest, so a multi-GiB bundle runs inside a 512 MB heap.
+ * Reads run `fetchConcurrency` wide behind a queue bounded in bytes; the writer
+ * is single-threaded and drains that queue in the exact order the Lister
+ * planned. Nothing is buffered whole, so a multi-GiB bundle is written inside a
+ * 512 MB heap.
  */
 class FrameBundle(
     private val store: ObjectStore,
@@ -34,7 +36,12 @@ class FrameBundle(
     }
 
     fun runOnce(owner: String): Outcome {
-        val claimed = bundles.claimNext(config.engine.bundlerLeaseMinutes, owner) ?: return Outcome.Nothing
+        val claimed = bundles.claimNext(
+            config.engine.leaseMinutes,
+            config.engine.maxAttempts,
+            owner,
+        ) ?: return Outcome.Nothing
+
         val rows = members.listForBundle(claimed.id)
         if (rows.isEmpty()) {
             bundles.markFailed(claimed.id, "claimed a bundle with no members")
@@ -56,7 +63,6 @@ class FrameBundle(
                 writeArchive(out, rows, manifest)
             }
             val plan = UstarFramer.plan(rows.map { it.lengthBytes })
-            val manifestOffset = plan.cursorAfter + UstarFramer.BLOCK
 
             bundles.markWritten(
                 id = claimed.id,
@@ -64,7 +70,7 @@ class FrameBundle(
                 byteSize = meta.sizeBytes,
                 md5 = meta.md5,
                 memberCount = rows.size.toLong(),
-                manifestOffset = manifestOffset,
+                manifestOffset = plan.cursorAfter + UstarFramer.BLOCK,
                 manifestLength = manifest.size.toLong(),
             )
             log.info("bundle {} written: {} members, {} bytes", claimed.id, rows.size, meta.sizeBytes)
@@ -72,7 +78,7 @@ class FrameBundle(
         } catch (e: ObjectUnreadable) {
             // A partial object must never be left behind to be mistaken for a bundle.
             discardPartial(claimed)
-            val broken = rows.first { it.source.path == e.path }
+            val broken = rows.firstOrNull { it.source.path == e.path } ?: rows.first()
             replan(claimed, rows, broken, e.message ?: "unreadable member")
         }
     }
@@ -89,16 +95,14 @@ class FrameBundle(
         reason: String,
     ): Outcome.Replanned {
         log.warn("bundle {} failing: {} ({})", claimed.id, reason, broken.source.path)
-        members.recordMemberFailure(
-            claimed.cohortDate, broken.source.path, broken.source.generation, reason
-        )
+        members.recordMemberFailure(claimed.cohortDate, broken.source.path, broken.source.generation, reason)
         bundles.markFailed(claimed.id, reason)
 
         val survivors = rows.filterNot { it.source.path == broken.source.path }
         if (survivors.isEmpty()) return Outcome.Replanned(claimed.id, null, broken.source.path)
 
         val newObjectPath = claimed.objectPath.replace(".tar", "-r${claimed.attempts}.tar")
-        val newBundleId = bundles.create(claimed.cohortDate, claimed.bucket, newObjectPath)
+        val newBundleId = bundles.create(claimed.cohortDate, claimed.bucket, newObjectPath, config.archival.tarLayoutVersion)
         val plan = UstarFramer.plan(survivors.map { it.lengthBytes })
         members.reassign(
             claimed.cohortDate,
@@ -117,47 +121,39 @@ class FrameBundle(
         }
     }
 
-    private fun writeArchive(out: OutputStream, rows: List<StoredMember>, manifest: ByteArray) {
-        val buffer = ByteArray(config.engine.bundlerChunkBytes.coerceAtMost(1 shl 20))
+    private fun writeArchive(raw: OutputStream, rows: List<StoredMember>, manifest: ByteArray) {
+        // The upload chunk is the writer's buffer: whole chunks go out at once,
+        // which is what a GCS resumable upload wants.
+        val out = BufferedOutputStream(raw, config.engine.uploadChunkBytes)
         var position = 0L
 
-        for (row in rows) {
-            val name = ObjectNaming.entryNameFor(row.source.path)
-            val mtime = row.source.generation / 1_000_000
-            out.write(UstarFramer.header(name, row.lengthBytes, mtime))
-            position += UstarFramer.BLOCK
+        ReadAheadPipeline(
+            store = store,
+            bucket = config.archival.sourceBucket,
+            fetchConcurrency = config.engine.fetchConcurrency,
+            queueBytes = config.engine.queueBytes,
+        ).use { pipeline ->
+            pipeline.stream(rows) { member, payload ->
+                out.write(UstarFramer.header(
+                    ObjectNaming.entryNameFor(member.source.path),
+                    member.lengthBytes,
+                    member.source.generation / 1_000_000,
+                ))
+                position += UstarFramer.BLOCK
 
-            // The invariant the whole index depends on, asserted as we go.
-            check(position == row.offsetBytes) {
-                "offset drift: writing ${row.source.path} at $position, member row says ${row.offsetBytes}"
-            }
-
-            var copied = 0L
-            store.openRange(
-                config.archival.sourceBucket,
-                row.source.path,
-                row.source.generation,
-                0,
-                row.lengthBytes,
-            ).use { input ->
-                while (true) {
-                    val n = input.read(buffer)
-                    if (n <= 0) break
-                    out.write(buffer, 0, n)
-                    copied += n
+                // The invariant the whole index depends on, asserted as we go.
+                check(position == member.offsetBytes) {
+                    "offset drift: writing ${member.source.path} at $position, " +
+                        "member row says ${member.offsetBytes}"
                 }
-            }
-            if (copied != row.lengthBytes) {
-                throw ObjectUnreadable(
-                    config.archival.sourceBucket, row.source.path,
-                    IllegalStateException("read $copied of ${row.lengthBytes} bytes"),
-                )
-            }
-            position += copied
 
-            val padding = UstarFramer.paddingAfter(row.lengthBytes)
-            out.write(padding)
-            position += padding.size
+                out.write(payload)
+                position += payload.size
+
+                val padding = UstarFramer.paddingAfter(member.lengthBytes)
+                out.write(padding)
+                position += padding.size
+            }
         }
 
         // The manifest is the last member, so the index can be rebuilt from the
@@ -166,6 +162,7 @@ class FrameBundle(
         out.write(manifest)
         out.write(UstarFramer.paddingAfter(manifest.size.toLong()))
         out.write(UstarFramer.endOfArchive())
+        out.flush()
     }
 
     /** One JSON object per line, so the manifest can be counted without a parser. */

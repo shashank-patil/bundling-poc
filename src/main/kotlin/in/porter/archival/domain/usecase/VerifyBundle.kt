@@ -84,8 +84,10 @@ class VerifyBundle(
         )
 
         // 6. Every byte. Expensive, so it runs last and only when enabled.
-        checks += if (config.engine.verifyFullByteScan) {
-            val sample = rows.shuffled().take(config.engine.verifySampleSize)
+        val sampleRatio = config.engine.verifySampleRatio
+        checks += if (sampleRatio > 0.0) {
+            val sampleSize = maxOf(1, Math.ceil(rows.size * sampleRatio).toInt())
+            val sample = if (sampleRatio >= 1.0) rows else rows.shuffled().take(sampleSize)
             val bad = sample.filterNot { member -> crcMatches(bundle, member.offsetBytes, member.lengthBytes, member.crc32c) }
             CheckResult("6 every byte", bad.isEmpty(), "${sample.size} sampled, ${bad.size} mismatched")
         } else {

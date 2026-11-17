@@ -31,14 +31,27 @@ fun runLister(wiring: Wiring, cohortArg: String?) {
 
 /**
  * Cron 2. Claims one bundle at a time with a lease, frames it, then runs the
- * verification checks. Keeps going until there is nothing left to claim.
+ * verification checks.
+ *
+ * A day's work spans more than one hourly slot, so the run stops claiming new
+ * bundles once its budget is spent and lets the next slot carry on. Two pods
+ * never overlap because the CronJob sets concurrencyPolicy: Forbid, and two
+ * bundlers never fight over one tar because the claim takes a lease.
  */
 fun runBundler(wiring: Wiring) {
     val owner = "${InetAddress.getLocalHost().hostName}-${ProcessHandle.current().pid()}"
+    val budgetMinutes = wiring.config.engine.runBudgetMinutes
+    val deadline = System.nanoTime() + budgetMinutes.toLong() * 60L * 1_000_000_000L
+
     var written = 0
     var replanned = 0
 
     while (true) {
+        if (System.nanoTime() > deadline) {
+            log.info("run budget of {} min spent; stopping with work still queued", budgetMinutes)
+            break
+        }
+
         when (val outcome = wiring.frameBundle.runOnce(owner)) {
             is FrameBundle.Outcome.Nothing -> break
 
@@ -46,7 +59,10 @@ fun runBundler(wiring: Wiring) {
                 written++
                 val report = wiring.verifyBundle.verify(outcome.bundleId)
                 report.checks.forEach { c ->
-                    log.info("  bundle {} check {} {} - {}", outcome.bundleId, c.name, if (c.passed) "PASS" else "FAIL", c.detail)
+                    log.info(
+                        "  bundle {} check {} {} - {}",
+                        outcome.bundleId, c.name, if (c.passed) "PASS" else "FAIL", c.detail,
+                    )
                 }
             }
 

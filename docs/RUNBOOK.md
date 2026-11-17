@@ -136,3 +136,44 @@ deletes nothing it never saw.
   filesystem implementation for GCS is one class.
 - **Archive storage class and retrieval billing.** Confirmed from Google's
   pricing page rather than measured.
+
+---
+
+## D. Configuration — where each LLD value lives
+
+The `archive:` block in LLD section 4.1 is split across two files by whether
+changing it needs a design review.
+
+| LLD key | File | Note |
+| --- | --- | --- |
+| `sourceBucket`, `sourcePrefix` | archival.properties | |
+| `archiveBucket` | archival.properties | open question 4 |
+| `cutoffDays` | archival.properties | 90 |
+| `targetBundleBytes` | archival.properties | 1 GiB here, 6 GiB in production |
+| `maxBundleMembers` | archival.properties | 20,000 here, 100,000 in production |
+| `partitioning.*` | archival.properties | key, interval, livePartitions, premake, dropPolicy |
+| never-archived prefixes | archival.properties | `excludedPrefixes`, enforced by the Lister |
+| `uploadChunkBytes` | engine.properties | validated as a multiple of 256 KiB at boot |
+| `queueBytes` | engine.properties | the pipeline's byte budget |
+| `fetchConcurrency` | engine.properties | reader threads |
+| `runBudget` | engine.properties | `runBudgetMinutes`, stops claiming new bundles |
+| `leaseMinutes`, `maxAttempts` | engine.properties | claim lease, and give-up threshold |
+| `verifySampleRatio` | engine.properties | 0 parks check 6, 1.0 reads every byte back |
+
+Any key can be overridden by an environment variable: `CUTOFF_DAYS`,
+`TARGET_BUNDLE_BYTES`, `FETCH_CONCURRENCY`, and so on. That is how
+`kind/03-config.yaml` retargets one image without a rebuild.
+
+### How the queue works
+
+`fetchConcurrency` readers run ahead of a single writer, and the writer drains
+them in the exact order the Lister planned. The queue is bounded in **bytes**,
+not rows — rows say nothing about memory, since 20,000 HTML twins and 20,000
+PDFs are the same count and two very different heaps.
+
+Only the writer thread decides what to submit, and it never submits work it is
+not already committed to draining in order, so the bound cannot deadlock. A
+single member larger than the whole budget is admitted on its own rather than
+stalling the run. `ReadAheadPipelineTest` pins all of that: order, overlap, the
+byte ceiling, the oversize case, and that a failed read surfaces as
+`ObjectUnreadable` rather than a wrapped executor error.

@@ -19,11 +19,12 @@ class PsqlArchiveBundleRepo(private val db: Db) : ArchiveBundleRepo {
         byte_size, md5, member_count, manifest_offset, manifest_length, attempts
     """.trimIndent()
 
-    override fun create(cohortDate: CohortDate, bucket: String, objectPath: String): Long = db.tx { c ->
+    override fun create(cohortDate: CohortDate, bucket: String, objectPath: String, layoutVersion: Int): Long = db.tx { c ->
         c.prepareStatement(
             """
-            INSERT INTO invoice_archive_bundles (bundle_bucket, bundle_object, cohort_date, state)
-            VALUES (?, ?, ?, 'BUILDING')
+            INSERT INTO invoice_archive_bundles
+                   (bundle_bucket, bundle_object, cohort_date, state, layout_version)
+            VALUES (?, ?, ?, 'BUILDING', ?)
             ON CONFLICT (bundle_bucket, bundle_object) DO UPDATE SET updated_at = now()
             RETURNING id
             """
@@ -31,6 +32,7 @@ class PsqlArchiveBundleRepo(private val db: Db) : ArchiveBundleRepo {
             st.setString(1, bucket)
             st.setString(2, objectPath)
             st.setObject(3, cohortDate.value)
+            st.setInt(4, layoutVersion)
             st.executeQuery().use { rs -> rs.next(); rs.getLong(1) }
         }
     }
@@ -40,7 +42,7 @@ class PsqlArchiveBundleRepo(private val db: Db) : ArchiveBundleRepo {
      * tar, and a crashed run becomes claimable again once its lease expires -
      * roughly 30 claims a day, not 1.88 M.
      */
-    override fun claimNext(leaseMinutes: Int, owner: String): ClaimedBundle? = db.tx { c ->
+    override fun claimNext(leaseMinutes: Int, maxAttempts: Int, owner: String): ClaimedBundle? = db.tx { c ->
         c.prepareStatement(
             """
             UPDATE invoice_archive_bundles
@@ -48,6 +50,7 @@ class PsqlArchiveBundleRepo(private val db: Db) : ArchiveBundleRepo {
              WHERE id = (
                    SELECT id FROM invoice_archive_bundles
                     WHERE state = 'BUILDING'
+                      AND attempts < ?
                       AND (claimed_at IS NULL OR claimed_at < now() - make_interval(mins => ?))
                     ORDER BY id
                     FOR UPDATE SKIP LOCKED
@@ -57,7 +60,8 @@ class PsqlArchiveBundleRepo(private val db: Db) : ArchiveBundleRepo {
             """
         ).use { st ->
             st.setString(1, owner)
-            st.setInt(2, leaseMinutes)
+            st.setInt(2, maxAttempts)
+            st.setInt(3, leaseMinutes)
             st.executeQuery().use { rs -> if (rs.next()) rs.toBundle() else null }
         }
     }

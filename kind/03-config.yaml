@@ -11,7 +11,13 @@ data:
   DB_PASSWORD: archival
   SOURCE_ROOT: /data/sources
   ARCHIVE_ROOT: /data/bundles
-  # Design values, overriding archival.properties for the demo.
-  BUNDLE_TARGET_BYTES: "1073741824"
-  BUNDLE_MAX_MEMBERS: "20000"
+  # Design values, overriding archival.properties for the demo. Names follow
+  # the LLD's archive: block, upper-snake-cased.
+  TARGET_BUNDLE_BYTES: "1073741824"
+  MAX_BUNDLE_MEMBERS: "20000"
   CUTOFF_DAYS: "90"
+  # Engineering values, overriding engine.properties. Eight readers rather than
+  # 32 is the LLD's own staging column, and it keeps the demo gentle on a laptop.
+  FETCH_CONCURRENCY: "8"
+  QUEUE_BYTES: "67108864"
+  RUN_BUDGET_MINUTES: "10"

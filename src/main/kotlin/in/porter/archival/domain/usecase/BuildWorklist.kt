@@ -58,7 +58,19 @@ class BuildWorklist(
                 // which is already deterministic and needs no global sort - so a
                 // rerun re-packs byte-identically without holding a day in memory.
                 for (path in listOf(parsed.path, ObjectNaming.htmlTwinOf(parsed.path))) {
+                    // Route maps, marketing assets and report PDFs are not tax
+                    // documents and are never archived, whatever points at them.
+                    if (config.archival.excludedPrefixes.any { path.startsWith(it) || path.contains("/$it") }) {
+                        skipped++
+                        continue
+                    }
                     val named = ObjectNaming.nameOf(path) ?: continue
+                    if (named.kind.name !in config.archival.docKinds ||
+                        named.format.extension !in config.archival.docFormats
+                    ) {
+                        skipped++
+                        continue
+                    }
                     val meta = store.stat(parsed.bucket, path)
                     if (meta == null) {
                         skipped++
@@ -104,8 +116,8 @@ class BuildWorklist(
         fun add(source: SourceObject, named: ObjectNaming.Named) {
             val costInTar = UstarFramer.BLOCK + UstarFramer.padTo512(source.sizeBytes)
             val wouldExceedBytes = pending.isNotEmpty() &&
-                pendingBytes + costInTar > config.archival.bundleTargetBytes
-            val wouldExceedMembers = pending.size >= config.archival.bundleMaxMembers
+                pendingBytes + costInTar > config.archival.targetBundleBytes
+            val wouldExceedMembers = pending.size >= config.archival.maxBundleMembers
             if (wouldExceedBytes || wouldExceedMembers) flush()
 
             pending.add(source to named)
@@ -118,7 +130,7 @@ class BuildWorklist(
 
         private fun flush() {
             val objectPath = bundleObjectPath(cohortDate, ordinalInDay++)
-            val bundleId = bundles.create(cohortDate, config.archival.archiveBucket, objectPath)
+            val bundleId = bundles.create(cohortDate, config.archival.archiveBucket, objectPath, config.archival.tarLayoutVersion)
 
             val plan = UstarFramer.plan(pending.map { it.first.sizeBytes })
             val planned = pending.mapIndexed { i, (source, named) ->

@@ -44,8 +44,8 @@ class ObjectUnreadable(val bucket: String, val path: String, cause: Throwable? =
     RuntimeException("unreadable object gs://$bucket/$path", cause)
 
 interface ArchiveBundleRepo {
-    fun create(cohortDate: CohortDate, bucket: String, objectPath: String): Long
-    fun claimNext(leaseMinutes: Int, owner: String): ClaimedBundle?
+    fun create(cohortDate: CohortDate, bucket: String, objectPath: String, layoutVersion: Int): Long
+    fun claimNext(leaseMinutes: Int, maxAttempts: Int, owner: String): ClaimedBundle?
     fun markWritten(id: Long, generation: Long, byteSize: Long, md5: String, memberCount: Long, manifestOffset: Long, manifestLength: Long)
     fun markVerified(id: Long)
     fun markFailed(id: Long, error: String)
