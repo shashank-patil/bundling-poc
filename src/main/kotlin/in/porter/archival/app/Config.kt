@@ -2,60 +2,129 @@ package `in`.porter.archival.app
 
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.Properties
 
 /**
- * Every value the LLD pins as configuration, read from the environment so the
- * same image runs under docker-compose and under kind without a rebuild.
+ * Three sources, kept apart on purpose.
  *
- * The defaults are the LLD's *staging* column, not production: a 1 GiB bundle
- * target and 20,000 members, which is what a laptop can actually demonstrate.
+ *   archival.properties  design decisions from the LLD - changing one changes
+ *                        what the archive contains, or when
+ *   engine.properties    tuning only - how hard the job pushes
+ *   environment          where this particular process happens to run
+ *
+ * Any key can still be overridden by an environment variable, which is how the
+ * kind manifests point the same image at a different database or folder.
  */
 data class Config(
+    val archival: ArchivalConfig,
+    val engine: EngineConfig,
+    val runtime: RuntimeConfig,
+) {
+    companion object {
+        fun load(): Config = Config(
+            archival = ArchivalConfig.from(read("archival.properties")),
+            engine = EngineConfig.from(read("engine.properties")),
+            runtime = RuntimeConfig.fromEnv(),
+        )
+
+        private fun read(resource: String): Properties =
+            Properties().apply {
+                Config::class.java.classLoader.getResourceAsStream(resource)
+                    ?.use { load(it) }
+                    ?: error("missing config resource: $resource")
+            }
+    }
+}
+
+/** Design configuration. Each field maps to a decision in the LLD. */
+data class ArchivalConfig(
+    val sourceBucket: String,
+    val sourcePrefix: String,
+    val archiveBucket: String,
+    val cutoffDays: Int,
+    val bundleTargetBytes: Long,
+    val bundleMaxMembers: Int,
+    val membersRetentionMonths: Int,
+    val tarLayoutVersion: Int,
+    val docKinds: List<String>,
+    val docFormats: List<String>,
+) {
+    companion object {
+        fun from(p: Properties) = ArchivalConfig(
+            sourceBucket = p.required("source.bucket"),
+            sourcePrefix = p.required("source.prefix"),
+            archiveBucket = p.required("archive.bucket"),
+            cutoffDays = p.required("cutoff.days").toInt(),
+            bundleTargetBytes = p.required("bundle.target.bytes").toLong(),
+            bundleMaxMembers = p.required("bundle.max.members").toInt(),
+            membersRetentionMonths = p.required("members.retention.months").toInt(),
+            tarLayoutVersion = p.required("tar.layout.version").toInt(),
+            docKinds = p.required("doc.kinds").split(',').map { it.trim() },
+            docFormats = p.required("doc.formats").split(',').map { it.trim() },
+        )
+    }
+}
+
+/** Engineering configuration. Tuning only; none of it changes the archive. */
+data class EngineConfig(
+    val dbPoolSize: Int,
+    val dbStatementTimeout: String,
+    val listerPageSize: Int,
+    val bundlerReaders: Int,
+    val bundlerQueueBytes: Long,
+    val bundlerChunkBytes: Int,
+    val bundlerLeaseMinutes: Int,
+    val verifyFullByteScan: Boolean,
+    val verifySampleSize: Int,
+) {
+    companion object {
+        fun from(p: Properties) = EngineConfig(
+            dbPoolSize = p.required("db.pool.size").toInt(),
+            dbStatementTimeout = p.required("db.statement.timeout"),
+            listerPageSize = p.required("lister.page.size").toInt(),
+            bundlerReaders = p.required("bundler.readers").toInt(),
+            bundlerQueueBytes = p.required("bundler.queue.bytes").toLong(),
+            bundlerChunkBytes = p.required("bundler.chunk.bytes").toInt(),
+            bundlerLeaseMinutes = p.required("bundler.lease.minutes").toInt(),
+            verifyFullByteScan = p.required("verify.full.byte.scan").toBoolean(),
+            verifySampleSize = p.required("verify.sample.size").toInt(),
+        )
+    }
+}
+
+/**
+ * Where this process happens to be running. Not a design decision and not a
+ * tuning knob - just the address of the database and the two folders standing
+ * in for the GCS buckets.
+ */
+data class RuntimeConfig(
     val dbUrl: String,
     val dbUser: String,
     val dbPassword: String,
-
-    /** Stands in for the GCS bucket holding the source objects. */
     val sourceRoot: Path,
-    /** Stands in for the archive bucket the tars are written to. */
     val archiveRoot: Path,
-    val sourceBucket: String,
-    val archiveBucket: String,
-    val sourcePrefix: String,
-
-    val cutoffDays: Int,
-    val targetBundleBytes: Long,
-    val maxBundleMembers: Int,
-    val readers: Int,
-    val queueBytes: Long,
-    val uploadChunkBytes: Int,
-    /** Keyset page size for the OMS worklist query. */
-    val listerPageSize: Int,
-    val leaseMinutes: Int,
 ) {
     companion object {
-        fun fromEnv(): Config = Config(
+        fun fromEnv() = RuntimeConfig(
             dbUrl = env("DB_URL", "jdbc:postgresql://localhost:55432/archival"),
             dbUser = env("DB_USER", "archival"),
             dbPassword = env("DB_PASSWORD", "archival"),
-
             sourceRoot = Paths.get(env("SOURCE_ROOT", "var/sources")).toAbsolutePath(),
             archiveRoot = Paths.get(env("ARCHIVE_ROOT", "var/archive")).toAbsolutePath(),
-            sourceBucket = env("SOURCE_BUCKET", "dom-ordersystem-prod-gcs-completed-orders"),
-            archiveBucket = env("ARCHIVE_BUCKET", "dom-invoice-archive-poc"),
-            sourcePrefix = env("SOURCE_PREFIX", "order-invoices/"),
-
-            cutoffDays = env("CUTOFF_DAYS", "90").toInt(),
-            targetBundleBytes = env("TARGET_BUNDLE_BYTES", "1073741824").toLong(),
-            maxBundleMembers = env("MAX_BUNDLE_MEMBERS", "20000").toInt(),
-            readers = env("READERS", "32").toInt(),
-            queueBytes = env("QUEUE_BYTES", "67108864").toLong(),
-            uploadChunkBytes = env("UPLOAD_CHUNK_BYTES", "16777216").toInt(),
-            listerPageSize = env("LISTER_PAGE_SIZE", "20000").toInt(),
-            leaseMinutes = env("LEASE_MINUTES", "120").toInt(),
         )
-
-        private fun env(key: String, default: String): String =
-            System.getenv(key)?.takeIf { it.isNotBlank() } ?: default
     }
 }
+
+/**
+ * Properties file first, environment second: SOURCE_BUCKET overrides
+ * source.bucket, BUNDLE_TARGET_BYTES overrides bundle.target.bytes, and so on.
+ */
+private fun Properties.required(key: String): String {
+    val fromEnv = System.getenv(key.uppercase().replace('.', '_'))
+    if (!fromEnv.isNullOrBlank()) return fromEnv
+    return getProperty(key)?.takeIf { it.isNotBlank() }
+        ?: error("missing configuration key: $key")
+}
+
+private fun env(key: String, default: String): String =
+    System.getenv(key)?.takeIf { it.isNotBlank() } ?: default
