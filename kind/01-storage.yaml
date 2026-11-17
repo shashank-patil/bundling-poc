@@ -1,0 +1,23 @@
+# One volume for the source objects, one for the archive. These stand in for
+# the two GCS buckets; nothing here is ever committed to git.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: archival-sources
+  namespace: archival
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 8Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: archival-bundles
+  namespace: archival
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 8Gi

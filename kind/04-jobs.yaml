@@ -1,0 +1,41 @@
+# One-shot jobs: apply the schema, then generate the corpus.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migrate
+  namespace: archival
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: bundling-poc:local
+          imagePullPolicy: Never
+          args: ["migrate"]
+          envFrom: [{ configMapRef: { name: archival-env } }]
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed
+  namespace: archival
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: seed
+          image: bundling-poc:local
+          imagePullPolicy: Never
+          args: ["seed", "--orders", "5000", "--size-kb", "200"]
+          envFrom: [{ configMapRef: { name: archival-env } }]
+          volumeMounts:
+            - { name: sources, mountPath: /data/sources }
+          resources:
+            limits: { memory: 1Gi }
+      volumes:
+        - name: sources
+          persistentVolumeClaim: { claimName: archival-sources }

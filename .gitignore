@@ -1,0 +1,17 @@
+# Build output
+build/
+.gradle/
+*.class
+
+# PoC data - never in git history
+/var/
+/data/
+/bundles/
+/sources/
+*.tar
+
+# Local env
+.env
+.DS_Store
+.idea/
+*.iml

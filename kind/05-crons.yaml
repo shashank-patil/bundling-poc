@@ -1,0 +1,63 @@
+# Cron 1 - the Lister. Metadata only: no payload is read and no tar is written.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: lister
+  namespace: archival
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: lister
+              image: bundling-poc:local
+              imagePullPolicy: Never
+              args: ["lister"]
+              envFrom: [{ configMapRef: { name: archival-env } }]
+              volumeMounts:
+                - { name: sources, mountPath: /data/sources, readOnly: true }
+              resources:
+                # Same ceiling as the LLD. The Lister holds one bundle's worth
+                # of entries, never a day's.
+                limits: { memory: 768Mi }
+          volumes:
+            - name: sources
+              persistentVolumeClaim: { claimName: archival-sources }
+---
+# Cron 2 - the Bundler. Streams members into a tar, then verifies it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: bundler
+  namespace: archival
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: bundler
+              image: bundling-poc:local
+              imagePullPolicy: Never
+              args: ["bundler"]
+              envFrom: [{ configMapRef: { name: archival-env } }]
+              volumeMounts:
+                - { name: sources, mountPath: /data/sources, readOnly: true }
+                - { name: bundles, mountPath: /data/bundles }
+              resources:
+                # A 1 GiB tar built inside 768Mi proves it streams.
+                limits: { memory: 768Mi }
+          volumes:
+            - name: sources
+              persistentVolumeClaim: { claimName: archival-sources }
+            - name: bundles
+              persistentVolumeClaim: { claimName: archival-bundles }
