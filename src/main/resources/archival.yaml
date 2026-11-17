@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# DESIGN CONFIGURATION
+#
+# A verbatim copy of the `archive:` block in LLD section 4.1, so the two can be
+# diffed line for line. Every value here is a recorded decision - changing one
+# changes WHAT the archive contains or WHEN, and needs a review.
+#
+# Anything NOT in the LLD block is internal engineering and lives in
+# engine.properties instead.
+#
+# Values are the staging column, which is what a laptop can demonstrate; the
+# production value is in the comment beside each, exactly as the LLD has it.
+# ---------------------------------------------------------------------------
+archive:
+  sourceBucket:      dom-ordersystem-prod-gcs-completed-orders
+  sourcePrefix:      order-invoices/
+  archiveBucket:     dom-invoice-archive-poc   # to be created - see Open question 4
+  cutoffDays:        90
+
+  targetBundleBytes: 1GiB        # production 6GiB
+  maxBundleMembers:  20000       # production 100000
+  uploadChunkBytes:  16MiB       # must be a multiple of 256KiB
+  queueBytes:        64MiB
+  fetchConcurrency:  8           # production 32
+  runBudget:         45m         # hourly, concurrencyPolicy: Forbid
+  leaseMinutes:      120
+  maxAttempts:       5
+  verifySampleRatio: 0.0         # 1.0 verifies every byte; parked for the initial rollout
+
+  tarLayoutVersion:  1
+
+  partitioning:
+    key:             cohort_date
+    interval:        monthly
+    livePartitions:  24
+    premake:         3
+    dropPolicy:      detach-verify-drop
+
+  docKinds:   [INVOICE, CN_DN]
+  docFormats: [pdf, html]
+
+  # never archived - not tax documents:
+  #   completed-orders-map/   309 M route PNGs, 29.85 TiB
+  #   invoice-assets/  christmas*/  customer-*-report-pdf/
+  excludedPrefixes:
+    - completed-orders-map/
+    - invoice-assets/
+    - christmas
+    - customer-

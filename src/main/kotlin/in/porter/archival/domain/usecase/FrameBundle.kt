@@ -37,8 +37,8 @@ class FrameBundle(
 
     fun runOnce(owner: String): Outcome {
         val claimed = bundles.claimNext(
-            config.engine.leaseMinutes,
-            config.engine.maxAttempts,
+            config.archival.leaseMinutes,
+            config.archival.maxAttempts,
             owner,
         ) ?: return Outcome.Nothing
 
@@ -124,14 +124,14 @@ class FrameBundle(
     private fun writeArchive(raw: OutputStream, rows: List<StoredMember>, manifest: ByteArray) {
         // The upload chunk is the writer's buffer: whole chunks go out at once,
         // which is what a GCS resumable upload wants.
-        val out = BufferedOutputStream(raw, config.engine.uploadChunkBytes)
+        val out = BufferedOutputStream(raw, config.archival.uploadChunkBytes)
         var position = 0L
 
         ReadAheadPipeline(
             store = store,
             bucket = config.archival.sourceBucket,
-            fetchConcurrency = config.engine.fetchConcurrency,
-            queueBytes = config.engine.queueBytes,
+            fetchConcurrency = config.archival.fetchConcurrency,
+            queueBytes = config.archival.queueBytes,
         ).use { pipeline ->
             pipeline.stream(rows) { member, payload ->
                 out.write(UstarFramer.header(

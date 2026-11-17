@@ -141,27 +141,17 @@ deletes nothing it never saw.
 
 ## D. Configuration — where each LLD value lives
 
-The `archive:` block in LLD section 4.1 is split across two files by whether
-changing it needs a design review.
+`src/main/resources/archival.yaml` is a **verbatim copy of the `archive:` block
+in LLD section 4.1** — same keys, same order, same `6GiB` / `45m` notation — so
+the two can be diffed line for line. It is the design configuration: changing
+anything in it changes what the archive contains or when.
 
-| LLD key | File | Note |
-| --- | --- | --- |
-| `sourceBucket`, `sourcePrefix` | archival.properties | |
-| `archiveBucket` | archival.properties | open question 4 |
-| `cutoffDays` | archival.properties | 90 |
-| `targetBundleBytes` | archival.properties | 1 GiB here, 6 GiB in production |
-| `maxBundleMembers` | archival.properties | 20,000 here, 100,000 in production |
-| `partitioning.*` | archival.properties | key, interval, livePartitions, premake, dropPolicy |
-| never-archived prefixes | archival.properties | `excludedPrefixes`, enforced by the Lister |
-| `uploadChunkBytes` | engine.properties | validated as a multiple of 256 KiB at boot |
-| `queueBytes` | engine.properties | the pipeline's byte budget |
-| `fetchConcurrency` | engine.properties | reader threads |
-| `runBudget` | engine.properties | `runBudgetMinutes`, stops claiming new bundles |
-| `leaseMinutes`, `maxAttempts` | engine.properties | claim lease, and give-up threshold |
-| `verifySampleRatio` | engine.properties | 0 parks check 6, 1.0 reads every byte back |
+`src/main/resources/engine.properties` holds only what the LLD does not
+specify: database pool size, statement timeout, the worklist page size, and the
+writer's copy buffer. Internal tuning, no design review needed.
 
-Any key can be overridden by an environment variable: `CUTOFF_DAYS`,
-`TARGET_BUNDLE_BYTES`, `FETCH_CONCURRENCY`, and so on. That is how
+Any key can be overridden by an environment variable — `CUTOFF_DAYS`,
+`TARGET_BUNDLE_BYTES`, `FETCH_CONCURRENCY`, `RUN_BUDGET` — which is how
 `kind/03-config.yaml` retargets one image without a rebuild.
 
 ### How the queue works
