@@ -87,20 +87,30 @@ class LocalFsObjectStore(private val roots: Map<String, Path>) : ObjectStore {
         var size = 0L
 
         // CREATE_NEW is ifGenerationMatch=0: it throws if the object already exists.
-        Files.newOutputStream(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { raw ->
-            BufferedOutputStream(raw, 1 shl 20).use { out ->
-                val counting = object : OutputStream() {
-                    override fun write(b: Int) {
-                        out.write(b); crc.update(b); md5.update(b.toByte()); size++
-                    }
+        try {
+            Files.newOutputStream(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE).use { raw ->
+                BufferedOutputStream(raw, 1 shl 20).use { out ->
+                    val counting = object : OutputStream() {
+                        override fun write(b: Int) {
+                            out.write(b); crc.update(b); md5.update(b.toByte()); size++
+                        }
 
-                    override fun write(b: ByteArray, off: Int, len: Int) {
-                        out.write(b, off, len); crc.update(b, off, len); md5.update(b, off, len); size += len
+                        override fun write(b: ByteArray, off: Int, len: Int) {
+                            out.write(b, off, len); crc.update(b, off, len); md5.update(b, off, len); size += len
+                        }
                     }
+                    write(counting)
+                    counting.flush()
                 }
-                write(counting)
-                counting.flush()
             }
+        } catch (t: Throwable) {
+            // A half-written object must never survive. GCS discards an
+            // abandoned resumable upload for us; on a filesystem we have to do
+            // it ourselves, and it has to happen here rather than in the caller:
+            // the sidecar is only written on success, so by the time the caller
+            // sees the failure there is no metadata left to find the file by.
+            runCatching { Files.deleteIfExists(file) }
+            throw t
         }
 
         val meta = ObjectMetadata(
