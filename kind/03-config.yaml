@@ -1,0 +1,17 @@
+# The two config files from the image, surfaced as a ConfigMap so the design
+# values are visible and reviewable in the cluster rather than baked away.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: archival-env
+  namespace: archival
+data:
+  DB_URL: jdbc:postgresql://postgres.archival.svc.cluster.local:5432/archival
+  DB_USER: archival
+  DB_PASSWORD: archival
+  SOURCE_ROOT: /data/sources
+  ARCHIVE_ROOT: /data/bundles
+  # Design values, overriding archival.properties for the demo.
+  BUNDLE_TARGET_BYTES: "1073741824"
+  BUNDLE_MAX_MEMBERS: "20000"
+  CUTOFF_DAYS: "90"

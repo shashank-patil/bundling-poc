@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retrieval
+  namespace: archival
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: retrieval }
+  template:
+    metadata:
+      labels: { app: retrieval }
+    spec:
+      containers:
+        - name: retrieval
+          image: bundling-poc:local
+          imagePullPolicy: Never
+          args: ["serve", "--port", "8080"]
+          envFrom: [{ configMapRef: { name: archival-env } }]
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - { name: bundles, mountPath: /data/bundles, readOnly: true }
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+            initialDelaySeconds: 5
+          resources:
+            # Retrieval reads one byte range, so it needs almost nothing.
+            limits: { memory: 256Mi }
+      volumes:
+        - name: bundles
+          persistentVolumeClaim: { claimName: archival-bundles }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: retrieval
+  namespace: archival
+spec:
+  type: NodePort
+  selector: { app: retrieval }
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30080
