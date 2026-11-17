@@ -104,7 +104,7 @@ interface WorklistSource {
     fun idBoundsFor(cohortDate: CohortDate): LongRange?
 
     /** One keyset page. Never the whole day in a single statement. */
-    fun page(afterId: Long, maxId: Long, limit: Int): List<WorklistRow>
+    fun page(cohortDate: CohortDate, afterId: Long, maxId: Long, limit: Int): List<WorklistRow>
 }
 
 data class WorklistRow(val id: Long, val orderId: String, val invoicePdfUri: String)

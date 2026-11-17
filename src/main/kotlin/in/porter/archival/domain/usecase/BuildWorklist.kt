@@ -44,7 +44,7 @@ class BuildWorklist(
         var pages = 0
 
         while (true) {
-            val page = worklist.page(cursor, bounds.last, config.engine.listerPageSize)
+            val page = worklist.page(cohortDate, cursor, bounds.last, config.engine.listerPageSize)
             if (page.isEmpty()) break
             pages++
 

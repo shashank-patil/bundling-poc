@@ -63,19 +63,24 @@ class OmsWorklistSource(private val db: Db) : WorklistSource {
      * few MB, holding no long snapshot, and a crash resumes from the cursor
      * instead of restarting the day.
      */
-    override fun page(afterId: Long, maxId: Long, limit: Int): List<WorklistRow> = db.read { c ->
+    override fun page(cohortDate: CohortDate, afterId: Long, maxId: Long, limit: Int): List<WorklistRow> =
+        db.read { c ->
         c.prepareStatement(
             """
             SELECT id, order_id, invoice_pdf_uri
               FROM oms_orders
-             WHERE id > ? AND id <= ? AND invoice_pdf_uri IS NOT NULL
+             WHERE id > ? AND id <= ?
+               AND created_at >= ? AND created_at < ?
+               AND invoice_pdf_uri IS NOT NULL
              ORDER BY id
              LIMIT ?
             """
         ).use { st ->
             st.setLong(1, afterId)
             st.setLong(2, maxId)
-            st.setInt(3, limit)
+            st.setObject(3, cohortDate.value.atStartOfDay().atOffset(ZoneOffset.UTC))
+            st.setObject(4, cohortDate.value.plusDays(1).atStartOfDay().atOffset(ZoneOffset.UTC))
+            st.setInt(5, limit)
             st.executeQuery().use { rs ->
                 buildList {
                     while (rs.next()) add(

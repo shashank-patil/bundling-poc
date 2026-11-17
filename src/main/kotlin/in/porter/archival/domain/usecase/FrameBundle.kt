@@ -29,6 +29,10 @@ class FrameBundle(
 ) {
     private val log = LoggerFactory.getLogger(javaClass)
 
+    private companion object {
+        val RETRY_SUFFIX = Regex("""-r(\d+)\.tar$""")
+    }
+
     sealed interface Outcome {
         data class Written(val bundleId: Long, val meta: ObjectMetadata, val memberCount: Long) : Outcome
         data class Replanned(val failedBundleId: Long, val newBundleId: Long?, val dropped: String) : Outcome
@@ -101,7 +105,11 @@ class FrameBundle(
         val survivors = rows.filterNot { it.source.path == broken.source.path }
         if (survivors.isEmpty()) return Outcome.Replanned(claimed.id, null, broken.source.path)
 
-        val newObjectPath = claimed.objectPath.replace(".tar", "-r${claimed.attempts}.tar")
+        // Strip any retry suffix already on the name before adding the next one,
+        // so a bundle that fails twice is -r2 and not -r1-r1.
+        val base = claimed.objectPath.replace(Regex("""-r\d+\.tar$"""), ".tar")
+        val retry = RETRY_SUFFIX.find(claimed.objectPath)?.groupValues?.get(1)?.toInt() ?: 0
+        val newObjectPath = base.replace(".tar", "-r${retry + 1}.tar")
         val newBundleId = bundles.create(claimed.cohortDate, claimed.bucket, newObjectPath, config.archival.tarLayoutVersion)
         val plan = UstarFramer.plan(survivors.map { it.lengthBytes })
         members.reassign(
