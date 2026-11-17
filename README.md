@@ -28,4 +28,10 @@ docker-compose up -d          # postgres on :55432
 ./gradlew run --args="migrate"
 ```
 
+## Configuration
+
+`src/main/resources/archival.yaml` is a verbatim copy of the `archive:` block in
+LLD section 4.1 — the design decisions. `engine.properties` holds only what the
+LLD does not specify. Both can be overridden by environment variables.
+
 See `docs/RUNBOOK.md` for the full demo sequence.

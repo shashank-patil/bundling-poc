@@ -40,7 +40,7 @@ fun runLister(wiring: Wiring, cohortArg: String?) {
  */
 fun runBundler(wiring: Wiring) {
     val owner = "${InetAddress.getLocalHost().hostName}-${ProcessHandle.current().pid()}"
-    val budgetMinutes = wiring.config.engine.runBudgetMinutes
+    val budgetMinutes = wiring.config.archival.runBudgetMinutes
     val deadline = System.nanoTime() + budgetMinutes.toLong() * 60L * 1_000_000_000L
 
     var written = 0

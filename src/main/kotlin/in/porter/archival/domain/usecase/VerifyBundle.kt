@@ -84,7 +84,7 @@ class VerifyBundle(
         )
 
         // 6. Every byte. Expensive, so it runs last and only when enabled.
-        val sampleRatio = config.engine.verifySampleRatio
+        val sampleRatio = config.archival.verifySampleRatio
         checks += if (sampleRatio > 0.0) {
             val sampleSize = maxOf(1, Math.ceil(rows.size * sampleRatio).toInt())
             val sample = if (sampleRatio >= 1.0) rows else rows.shuffled().take(sampleSize)

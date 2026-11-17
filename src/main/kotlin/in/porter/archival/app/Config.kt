@@ -1,5 +1,6 @@
 package `in`.porter.archival.app
 
+import org.yaml.snakeyaml.Yaml
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Properties
@@ -7,13 +8,13 @@ import java.util.Properties
 /**
  * Three sources, kept apart on purpose.
  *
- *   archival.properties  the `archive:` block from LLD 4.1 - design decisions.
- *                        Changing one changes what the archive contains, or when
- *   engine.properties    tuning only - how hard the job pushes
+ *   archival.yaml        a verbatim copy of the `archive:` block in LLD 4.1.
+ *                        Design decisions - changing one changes what the
+ *                        archive contains, or when
+ *   engine.properties    everything the LLD does not specify. Internal tuning
  *   environment          where this particular process happens to run
  *
- * Key names match the LLD so the two documents can be read side by side. Any
- * key can still be overridden by an environment variable - CUTOFF_DAYS,
+ * Any key can still be overridden by an environment variable - CUTOFF_DAYS,
  * TARGET_BUNDLE_BYTES, FETCH_CONCURRENCY - which is how the kind manifests
  * point one image at a different database or a smaller bundle.
  */
@@ -24,12 +25,21 @@ data class Config(
 ) {
     companion object {
         fun load(): Config = Config(
-            archival = ArchivalConfig.from(read("archival.properties")),
-            engine = EngineConfig.from(read("engine.properties")),
+            archival = ArchivalConfig.from(readYaml("archival.yaml")),
+            engine = EngineConfig.from(readProperties("engine.properties")),
             runtime = RuntimeConfig.fromEnv(),
         )
 
-        private fun read(resource: String): Properties =
+        @Suppress("UNCHECKED_CAST")
+        private fun readYaml(resource: String): Map<String, Any?> {
+            val stream = Config::class.java.classLoader.getResourceAsStream(resource)
+                ?: error("missing config resource: $resource")
+            val root = stream.use { Yaml().load<Map<String, Any?>>(it) }
+            return root["archive"] as? Map<String, Any?>
+                ?: error("$resource has no top-level `archive:` block")
+        }
+
+        private fun readProperties(resource: String): Properties =
             Properties().apply {
                 Config::class.java.classLoader.getResourceAsStream(resource)
                     ?.use { load(it) }
@@ -38,7 +48,7 @@ data class Config(
     }
 }
 
-/** Design configuration. Each field maps to a line in the LLD's archive: block. */
+/** The LLD's archive: block, field for field. */
 data class ArchivalConfig(
     val sourceBucket: String,
     val sourcePrefix: String,
@@ -46,6 +56,13 @@ data class ArchivalConfig(
     val cutoffDays: Int,
     val targetBundleBytes: Long,
     val maxBundleMembers: Int,
+    val uploadChunkBytes: Int,
+    val queueBytes: Long,
+    val fetchConcurrency: Int,
+    val runBudgetMinutes: Int,
+    val leaseMinutes: Int,
+    val maxAttempts: Int,
+    val verifySampleRatio: Double,
     val tarLayoutVersion: Int,
     val partitionKey: String,
     val partitionInterval: String,
@@ -57,45 +74,11 @@ data class ArchivalConfig(
     /** Prefixes that are not tax documents and must never be archived. */
     val excludedPrefixes: List<String>,
 ) {
-    companion object {
-        fun from(p: Properties) = ArchivalConfig(
-            sourceBucket = p.required("sourceBucket"),
-            sourcePrefix = p.required("sourcePrefix"),
-            archiveBucket = p.required("archiveBucket"),
-            cutoffDays = p.required("cutoffDays").toInt(),
-            targetBundleBytes = p.required("targetBundleBytes").toLong(),
-            maxBundleMembers = p.required("maxBundleMembers").toInt(),
-            tarLayoutVersion = p.required("tarLayoutVersion").toInt(),
-            partitionKey = p.required("partitioning.key"),
-            partitionInterval = p.required("partitioning.interval"),
-            livePartitions = p.required("partitioning.livePartitions").toInt(),
-            partitionPremake = p.required("partitioning.premake").toInt(),
-            dropPolicy = p.required("partitioning.dropPolicy"),
-            docKinds = p.required("docKinds").splitList(),
-            docFormats = p.required("docFormats").splitList(),
-            excludedPrefixes = p.required("excludedPrefixes").splitList(),
-        )
-    }
-}
-
-/** Engineering configuration. Tuning only; none of it changes the archive. */
-data class EngineConfig(
-    val fetchConcurrency: Int,
-    val queueBytes: Long,
-    val uploadChunkBytes: Int,
-    val runBudgetMinutes: Int,
-    val leaseMinutes: Int,
-    val maxAttempts: Int,
-    val verifySampleRatio: Double,
-    val dbPoolSize: Int,
-    val dbStatementTimeout: String,
-    val listerPageSize: Int,
-) {
     init {
         // Firm, and an API constraint rather than a preference: GCS resumable
         // upload rejects a chunk that is not a multiple of 256 KiB.
         require(uploadChunkBytes % (256 * 1024) == 0) {
-            "uploadChunkBytes must be a multiple of 256 KiB, got $uploadChunkBytes"
+            "uploadChunkBytes must be a multiple of 256KiB, got $uploadChunkBytes"
         }
         require(verifySampleRatio in 0.0..1.0) {
             "verifySampleRatio must be between 0 and 1, got $verifySampleRatio"
@@ -103,20 +86,54 @@ data class EngineConfig(
         require(queueBytes >= uploadChunkBytes) {
             "queueBytes ($queueBytes) must not be smaller than uploadChunkBytes ($uploadChunkBytes)"
         }
+        require(fetchConcurrency >= 1) { "fetchConcurrency must be at least 1" }
     }
 
     companion object {
+        @Suppress("UNCHECKED_CAST")
+        fun from(y: Map<String, Any?>): ArchivalConfig {
+            val partitioning = y.required("partitioning") as Map<String, Any?>
+            return ArchivalConfig(
+                sourceBucket = y.string("sourceBucket"),
+                sourcePrefix = y.string("sourcePrefix"),
+                archiveBucket = y.string("archiveBucket"),
+                cutoffDays = y.int("cutoffDays"),
+                targetBundleBytes = y.bytes("targetBundleBytes"),
+                maxBundleMembers = y.int("maxBundleMembers"),
+                uploadChunkBytes = y.bytes("uploadChunkBytes").toInt(),
+                queueBytes = y.bytes("queueBytes"),
+                fetchConcurrency = y.int("fetchConcurrency"),
+                runBudgetMinutes = y.minutes("runBudget"),
+                leaseMinutes = y.int("leaseMinutes"),
+                maxAttempts = y.int("maxAttempts"),
+                verifySampleRatio = y.string("verifySampleRatio").toDouble(),
+                tarLayoutVersion = y.int("tarLayoutVersion"),
+                partitionKey = partitioning.string("key"),
+                partitionInterval = partitioning.string("interval"),
+                livePartitions = partitioning.int("livePartitions"),
+                partitionPremake = partitioning.int("premake"),
+                dropPolicy = partitioning.string("dropPolicy"),
+                docKinds = y.list("docKinds"),
+                docFormats = y.list("docFormats"),
+                excludedPrefixes = y.list("excludedPrefixes"),
+            )
+        }
+    }
+}
+
+/** Everything the LLD does not specify. */
+data class EngineConfig(
+    val dbPoolSize: Int,
+    val dbStatementTimeout: String,
+    val listerPageSize: Int,
+    val copyBufferBytes: Int,
+) {
+    companion object {
         fun from(p: Properties) = EngineConfig(
-            fetchConcurrency = p.required("fetchConcurrency").toInt(),
-            queueBytes = p.required("queueBytes").toLong(),
-            uploadChunkBytes = p.required("uploadChunkBytes").toInt(),
-            runBudgetMinutes = p.required("runBudgetMinutes").toInt(),
-            leaseMinutes = p.required("leaseMinutes").toInt(),
-            maxAttempts = p.required("maxAttempts").toInt(),
-            verifySampleRatio = p.required("verifySampleRatio").toDouble(),
             dbPoolSize = p.required("db.poolSize").toInt(),
             dbStatementTimeout = p.required("db.statementTimeout"),
             listerPageSize = p.required("listerPageSize").toInt(),
+            copyBufferBytes = p.required("io.copyBufferBytes").toInt(),
         )
     }
 }
@@ -144,18 +161,70 @@ data class RuntimeConfig(
     }
 }
 
-/** Properties file first, environment second: FETCH_CONCURRENCY beats fetchConcurrency. */
+// --- lookup helpers: YAML value first, environment override second -----------
+
+private fun envKeyFor(key: String): String =
+    key.replace(Regex("([a-z0-9])([A-Z])"), "$1_$2").replace('.', '_').uppercase()
+
+private fun Map<String, Any?>.required(key: String): Any =
+    System.getenv(envKeyFor(key))?.takeIf { it.isNotBlank() }
+        ?: this[key]
+        ?: error("missing configuration key: $key")
+
+private fun Map<String, Any?>.string(key: String): String = required(key).toString().trim()
+
+private fun Map<String, Any?>.int(key: String): Int = string(key).toInt()
+
+@Suppress("UNCHECKED_CAST")
+private fun Map<String, Any?>.list(key: String): List<String> {
+    val raw = required(key)
+    return when (raw) {
+        is List<*> -> raw.map { it.toString().trim() }
+        else -> raw.toString().split(',').map { it.trim() }
+    }.filter { it.isNotEmpty() }
+}
+
+/** Accepts the LLD's own notation: 6GiB, 16MiB, 64MiB - or a plain byte count. */
+private fun Map<String, Any?>.bytes(key: String): Long = Units.toBytes(string(key), key)
+
+/** Accepts 45m, 2h, or a plain number of minutes. */
+private fun Map<String, Any?>.minutes(key: String): Int = Units.toMinutes(string(key), key)
+
 private fun Properties.required(key: String): String {
-    val envKey = key.replace(".", "_")
-        .replace(Regex("([a-z0-9])([A-Z])"), "$1_$2")
-        .uppercase()
-    System.getenv(envKey)?.takeIf { it.isNotBlank() }?.let { return it }
+    System.getenv(envKeyFor(key))?.takeIf { it.isNotBlank() }?.let { return it }
     return getProperty(key)?.takeIf { it.isNotBlank() }
         ?: error("missing configuration key: $key")
 }
 
-private fun String.splitList(): List<String> =
-    split(',').map { it.trim() }.filter { it.isNotEmpty() }
-
 private fun env(key: String, default: String): String =
     System.getenv(key)?.takeIf { it.isNotBlank() } ?: default
+
+/** So the config file can read the way the LLD writes it. */
+internal object Units {
+    private val SIZE = Regex("""^(\d+)\s*(B|KiB|MiB|GiB|TiB)?$""", RegexOption.IGNORE_CASE)
+    private val DURATION = Regex("""^(\d+)\s*(s|m|h)?$""", RegexOption.IGNORE_CASE)
+
+    fun toBytes(value: String, key: String = "value"): Long {
+        val m = SIZE.matchEntire(value) ?: error("$key is not a byte size: $value")
+        val n = m.groupValues[1].toLong()
+        return when (m.groupValues[2].lowercase()) {
+            "", "b" -> n
+            "kib" -> n shl 10
+            "mib" -> n shl 20
+            "gib" -> n shl 30
+            "tib" -> n shl 40
+            else -> error("$key has an unknown size unit: $value")
+        }
+    }
+
+    fun toMinutes(value: String, key: String = "value"): Int {
+        val m = DURATION.matchEntire(value) ?: error("$key is not a duration: $value")
+        val n = m.groupValues[1].toInt()
+        return when (m.groupValues[2].lowercase()) {
+            "", "m" -> n
+            "s" -> (n + 59) / 60
+            "h" -> n * 60
+            else -> error("$key has an unknown duration unit: $value")
+        }
+    }
+}
