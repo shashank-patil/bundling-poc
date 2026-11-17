@@ -1,0 +1,20 @@
+# Build output
+build/
+.gradle/
+*.class
+*.jar
+!gradle/wrapper/gradle-wrapper.jar
+
+# PoC data — never in git history
+var/
+data/
+bundles/
+sources/
+*.tar
+*.pdf
+
+# Local env
+.env
+.DS_Store
+.idea/
+*.iml
